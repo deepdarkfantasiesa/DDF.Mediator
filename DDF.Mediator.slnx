@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="DDF.Mediator.Abstractions/DDF.Mediator.Abstractions.csproj" />
+  <Project Path="DDF.Mediator/DDF.Mediator.csproj" />
+  <Project Path="DDF.Mediator.Tests/DDF.Mediator.Tests.csproj" />
+</Solution>
