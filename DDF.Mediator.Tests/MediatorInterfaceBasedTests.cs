@@ -149,10 +149,10 @@ public class MediatorInterfaceBasedTests
 	private sealed record CancellableInterfaceRequest : IRequest<string>;
 	private sealed class CancellableInterfaceRequestHandler : IRequestHandler<CancellableInterfaceRequest, string>
 	{
-		public Task<string> HandleAsync(CancellableInterfaceRequest request, CancellationToken cancellationToken = default)
+		public async Task<string> HandleAsync(CancellableInterfaceRequest request, CancellationToken cancellationToken = default)
 		{
 			cancellationToken.ThrowIfCancellationRequested();
-			return Task.FromResult("OK");
+			return await Task.FromResult("OK");
 		}
 	}
 }

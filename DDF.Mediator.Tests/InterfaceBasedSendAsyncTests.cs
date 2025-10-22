@@ -1,38 +1,57 @@
-using DDF.Mediator;
 using DDF.Mediator.Abstractions;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace DDF.Mediator.Tests;
 
-#region Test requests and handlers for interface-based SendAsync
-public sealed record InterfaceBasedRequest(string Value) : IRequest<string>;
+#region 直接基于IRequest<>、IRequestHandler<,>接口的请求和处理者定义
+public sealed record InterfaceBasedRequest(string Value): IRequest<string>;
 
-public sealed class InterfaceBasedRequestHandler : IRequestHandler<InterfaceBasedRequest, string>
+public sealed class InterfaceBasedRequestHandler: IRequestHandler<InterfaceBasedRequest, string>
 {
-	public Task<string> HandleAsync(InterfaceBasedRequest request, CancellationToken cancellationToken = default)
-		=> Task.FromResult($"InterfaceBased:{request.Value}");
+	public async Task<string> HandleAsync(InterfaceBasedRequest request, CancellationToken cancellationToken = default)
+		=> await Task.FromResult($"InterfaceBased:{request.Value}");
 }
 
-public sealed record PolymorphicRequest1(int Number) : IRequest<int>;
-public sealed record PolymorphicRequest2(int Number) : IRequest<int>;
+public sealed record PolymorphicRequest1(int Number): IRequest<int>;
+public sealed record PolymorphicRequest2(int Number): IRequest<int>;
 
-public sealed class PolymorphicRequestHandler1 : IRequestHandler<PolymorphicRequest1, int>
+public sealed class PolymorphicRequestHandler1: IRequestHandler<PolymorphicRequest1, int>
 {
-	public Task<int> HandleAsync(PolymorphicRequest1 request, CancellationToken cancellationToken = default)
-		=> Task.FromResult(request.Number * 2);
+	public async Task<int> HandleAsync(PolymorphicRequest1 request, CancellationToken cancellationToken = default)
+		=> await Task.FromResult(request.Number * 2);
 }
 
-public sealed class PolymorphicRequestHandler2 : IRequestHandler<PolymorphicRequest2, int>
+public sealed class PolymorphicRequestHandler2: IRequestHandler<PolymorphicRequest2, int>
 {
-	public Task<int> HandleAsync(PolymorphicRequest2 request, CancellationToken cancellationToken = default)
-		=> Task.FromResult(request.Number * 3);
+	public async Task<int> HandleAsync(PolymorphicRequest2 request, CancellationToken cancellationToken = default)
+		=> await Task.FromResult(request.Number * 3);
 }
+
+public sealed record UnhandledRequest: IRequest<bool>;
+
+public sealed record FaultyRequest: IRequest<string>;
+public sealed class FaultyRequestHandler: IRequestHandler<FaultyRequest, string>
+{
+	public Task<string> HandleAsync(FaultyRequest request, CancellationToken cancellationToken = default)
+		=> throw new InvalidOperationException("Handler failure");
+}
+
+public sealed record CancellableRequest: IRequest<string>;
+public sealed class CancellableRequestHandler: IRequestHandler<CancellableRequest, string>
+{
+	public async Task<string> HandleAsync(CancellableRequest request, CancellationToken cancellationToken = default)
+	{
+		cancellationToken.ThrowIfCancellationRequested();
+		return await Task.FromResult("OK");
+	}
+}
+
 #endregion
 
-#region Behaviors for interface-based requests (泛型定义)
+#region 基于IRequest<>的管道行为定义
 [PipelineBehaviorPriority(1)]
-public sealed class InterfaceValidationBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TResponse>
+public sealed class InterfaceValidationBehavior<TRequest, TResponse>: IPipelineBehavior<TRequest, TResponse>
 	where TRequest : IRequest<TResponse>
 {
 	private readonly InterfaceBehaviorLog _log;
@@ -45,7 +64,7 @@ public sealed class InterfaceValidationBehavior<TRequest, TResponse> : IPipeline
 }
 
 [PipelineBehaviorPriority(2)]
-public sealed class InterfaceLoggingBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TResponse>
+public sealed class InterfaceLoggingBehavior<TRequest, TResponse>: IPipelineBehavior<TRequest, TResponse>
 	where TRequest : IRequest<TResponse>
 {
 	private readonly InterfaceBehaviorLog _log;
@@ -77,6 +96,10 @@ public class InterfaceBasedSendAsyncTests
 		return services.BuildServiceProvider();
 	}
 
+	/// <summary>
+	/// 
+	/// </summary>
+	/// <returns></returns>
 	[Fact]
 	public async Task SendAsync_WithInterfaceParameter_ReturnsCorrectResult()
 	{
@@ -84,9 +107,13 @@ public class InterfaceBasedSendAsyncTests
 		var sender = sp.GetRequiredService<IRequestSender>();
 		var request = new InterfaceBasedRequest("Test");
 
-		var result = await sender.SendAsync(request);
+		//反射
+		var rResult = await sender.SendAsync(request);
+		Assert.Equal("InterfaceBased:Test", rResult);
 
-		Assert.Equal("InterfaceBased:Test", result);
+		//泛型
+		var tResult = await sender.SendAsync<InterfaceBasedRequest, string>(request);
+		Assert.Equal("InterfaceBased:Test", tResult);
 	}
 
 	[Fact]
@@ -95,21 +122,38 @@ public class InterfaceBasedSendAsyncTests
 		var sp = BuildServices();
 		var log = sp.GetRequiredService<InterfaceBehaviorLog>();
 		var sender = sp.GetRequiredService<IRequestSender>();
-		IRequest<string> request = new InterfaceBasedRequest("Pipeline");
+		var request = new InterfaceBasedRequest("Pipeline");
 
-		var result = await sender.SendAsync(request);
+		//反射
+		var rResult = await sender.SendAsync(request);
+		Assert.Equal("InterfaceBased:Pipeline", rResult);
+		Assert.Equal(new[] { "Interface-Validation", "Interface-Logging-Before", "Interface-Logging-After" }, log.Steps);
 
-		Assert.Equal("InterfaceBased:Pipeline", result);
+		log.Steps.Clear();
+
+		//泛型
+		var tResult = await sender.SendAsync<InterfaceBasedRequest, string>(request);
+		Assert.Equal("InterfaceBased:Pipeline", tResult);
 		Assert.Equal(new[] { "Interface-Validation", "Interface-Logging-Before", "Interface-Logging-After" }, log.Steps);
 	}
 
+	/// <summary>
+	/// 空入参
+	/// </summary>
+	/// <returns></returns>
 	[Fact]
 	public async Task SendAsync_WithInterfaceParameter_ThrowsWhenNull()
 	{
 		var sp = BuildServices();
 		var sender = sp.GetRequiredService<IRequestSender>();
 
-		await Assert.ThrowsAsync<ArgumentNullException>(() => sender.SendAsync<string>(null!));
+		InterfaceBasedRequest request = null!;
+
+		//反射
+		await Assert.ThrowsAsync<ArgumentNullException>(() => sender.SendAsync(request));
+
+		//泛型
+		await Assert.ThrowsAsync<ArgumentNullException>(() => sender.SendAsync<InterfaceBasedRequest, string>(request));
 	}
 
 	[Fact]
@@ -130,6 +174,10 @@ public class InterfaceBasedSendAsyncTests
 		Assert.Equal(30, result2);
 	}
 
+	/// <summary>
+	/// 缺失handler
+	/// </summary>
+	/// <returns></returns>
 	[Fact]
 	public async Task SendAsync_WithInterfaceParameter_ThrowsWhenHandlerMissing()
 	{
@@ -143,6 +191,10 @@ public class InterfaceBasedSendAsyncTests
 		await Assert.ThrowsAsync<InvalidOperationException>(() => sender.SendAsync(request));
 	}
 
+	/// <summary>
+	/// handler内抛出异常
+	/// </summary>
+	/// <returns></returns>
 	[Fact]
 	public async Task SendAsync_WithInterfaceParameter_HandlesExceptions()
 	{
@@ -158,6 +210,10 @@ public class InterfaceBasedSendAsyncTests
 		Assert.NotNull(ex.InnerException);
 	}
 
+	/// <summary>
+	/// 取消执行handler
+	/// </summary>
+	/// <returns></returns>
 	[Fact]
 	public async Task SendAsync_WithInterfaceParameter_HandlesCancellation()
 	{
@@ -173,40 +229,25 @@ public class InterfaceBasedSendAsyncTests
 		await Assert.ThrowsAsync<OperationCanceledException>(() => sender.SendAsync(request, cts.Token));
 	}
 
+	/// <summary>
+	/// 对比反射和泛型版本
+	/// </summary>
+	/// <returns></returns>
 	[Fact]
 	public async Task SendAsync_CompareWithTypedVersion()
 	{
 		var sp = BuildServices();
 		var sender = sp.GetRequiredService<IRequestSender>();
 
-		// 使用接口版本
+		//反射
 		IRequest<string> interfaceRequest = new InterfaceBasedRequest("Compare1");
 		var interfaceResult = await sender.SendAsync(interfaceRequest);
 
-		// 使用泛型版本
+		//泛型
 		var typedRequest = new InterfaceBasedRequest("Compare2");
 		var typedResult = await sender.SendAsync<InterfaceBasedRequest, string>(typedRequest);
 
 		Assert.Equal("InterfaceBased:Compare1", interfaceResult);
 		Assert.Equal("InterfaceBased:Compare2", typedResult);
-	}
-
-	private sealed record UnhandledRequest : IRequest<bool>;
-
-	private sealed record FaultyRequest : IRequest<string>;
-	private sealed class FaultyRequestHandler : IRequestHandler<FaultyRequest, string>
-	{
-		public Task<string> HandleAsync(FaultyRequest request, CancellationToken cancellationToken = default)
-			=> throw new InvalidOperationException("Handler failure");
-	}
-
-	private sealed record CancellableRequest : IRequest<string>;
-	private sealed class CancellableRequestHandler : IRequestHandler<CancellableRequest, string>
-	{
-		public Task<string> HandleAsync(CancellableRequest request, CancellationToken cancellationToken = default)
-		{
-			cancellationToken.ThrowIfCancellationRequested();
-			return Task.FromResult("OK");
-		}
 	}
 }

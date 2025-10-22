@@ -20,6 +20,29 @@ namespace DDF.Mediator
 		{
 			var assemblies = AppDomain.CurrentDomain.GetAssemblies();
 
+			#region 注册StreamRequest
+			var streamRequestTypes = assemblies.SelectMany(t => t.GetTypes())
+				.Where(t => t.IsClass
+					&& !t.IsAbstract
+					&& t.GetInterfaces().Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IStream<>)))
+				.ToList();
+
+			// 遍历所有 IRequest 类型，注册对应的 IRequestHandler
+			foreach(var streamRequestType in streamRequestTypes)
+			{
+				var responseType = streamRequestType.GetInterfaces().First(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IStream<>)).GetGenericArguments()[0];
+				var handlerType = typeof(IStreamHandler<,>).MakeGenericType(streamRequestType, responseType);
+
+				var implementationType = assemblies.SelectMany(t => t.GetTypes())
+					.FirstOrDefault(t => t.GetInterfaces().Contains(handlerType));
+
+				if(implementationType != null)
+				{
+					services.TryAddTransient(handlerType, implementationType);
+				}
+			}
+			#endregion
+
 			#region 注册Request
 			var requestTypes = assemblies.SelectMany(t => t.GetTypes())
 				.Where(t => t.IsClass
@@ -100,6 +123,7 @@ namespace DDF.Mediator
 			#endregion
 
 			#region 发送、发布的对象
+			services.TryAddTransient<IStreamSender, StreamSender>();
 			services.TryAddTransient<INotificationPublisher, NotificationPublisher>();
 			services.TryAddTransient<IRequestSender, RequestSender>();
 			services.TryAddTransient<IMediator, Mediator>();
