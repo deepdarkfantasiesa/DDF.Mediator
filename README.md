@@ -1,11 +1,74 @@
 # DDF.Mediator
 
-一个聚焦于“可组合抽象 + 可控管道行为 + CQRS + DDD + 领域事件”整合的轻量级 .NET 中介者框架。  
-相比传统 Mediator，本框架强调：通过标记接口驱动行为选择，通过可排序的管道（Pipeline Behavior）构建责任链，通过领域事件与聚合根交互实现事务内协作。
+一款轻量级中介者，通过可排序管道行为将不同的横切关注点构建为责任链，使代码更专注于业务逻辑的设计、更加模块化、更易于单元测试，让开发人员更快速构建出命令查询职责分离（CQRS）+领域驱动设计（DDD）架构
 
 > 当前仍处在快速演进阶段，接口可能调整。
 
 ---
+
+## 基本使用
+所有Handler和PipelineBehavior都会在IServiceCollection的拓展函数AddMediator里被注册为Transient,所以写在里面的代码应该是无状态的
+
+首先定义一个Request
+```csharp
+public sealed record Ping:IRequest<string>
+{
+	public string Echo { get; init; }
+}
+```
+
+再定义一个对应的RequestHandler
+```csharp
+public sealed class Pong: IRequestHandler<Ping, string>
+{
+	public async Task<string> HandleAsync(Ping request, CancellationToken cancellationToken = default)
+	{
+		return request.Echo + "Pong";
+	}
+}
+```
+
+让程序启动时扫描程序集注册所有Handler
+```csharp
+builder.Services.AddMediator();
+```
+
+最后通过中介者调用
+```csharp
+//从依赖注入容器中通过IMediator和IRequestSender分别获取mediator、sender，
+//可以通过以下四种方式调用，推荐使用指定泛型类型的方式调用，
+//因为另一种使用了反射，性能理论上不如纯泛型的好
+await mediator.SendAsync(new Ping { Echo = "Ping-" });//Ping-Pong
+
+await mediator.SendAsync<Ping, string>(new Ping { Echo = "Ping~" });//Ping~Pong
+
+await sender.SendAsync(new Ping { Echo = "Ping%" });//Ping%Pong
+
+await sender.SendAsync<Ping, string>(new Ping { Echo = "Ping*" });//Ping*Pong
+```
+
+定义管道行为，注意一定要指定优先级
+```csharp
+[PipelineBehaviorPriority(0)]
+public sealed class TestBehavior<TRequest, TResponse>(ILogger<TestBehavior<TRequest, TResponse>> logger): IPipelineBehavior<TRequest, TResponse>
+	where TRequest : IRequest<TResponse>
+{
+	public async Task<TResponse> HandleAsync(TRequest request, NextHandlerDelegate<TResponse> next, CancellationToken cancellationToken = default)
+	{
+		logger.LogInformation("TestBehavior-Before");
+		var response = await next();
+		logger.LogInformation("TestBehavior-After");
+		return response;
+	}
+}
+```
+
+然后注册进容器里
+```csharp
+builder.Services.AddMediator(typeof(TestBehavior<,>));
+```
+
+最后回再使用IMediator或IRequestSender以Ping对象为参数发送请求，可以发现运行Pong之前控制台会输出"TestBehavior-Before"，运行Pong之后控制台会输出"TestBehavior-After"，不同的PipelineBehavior可以按照优先级从小到大的顺序嵌套在最终的Handler外层;
 
 ## 1. 核心抽象层 (Abstractions)
 
