@@ -387,26 +387,6 @@ public sealed class TransactionBehavior<TCommand, TResponse>(IDbTransaction _con
 }
 ```
 
-重写SaveEntitiesAsync
-```csharp
-  public async Task<bool> SaveEntitiesAsync(CancellationToken cancellationToken = default)
-  {
-      //先持久化实体
-      await base.SaveChangesAsync(cancellationToken);
-
-	  //查询所有已跟踪且拥有领域事件的实体（或聚合根）
-
-	  //获取所有领域事件
-
-	  //清空聚合根中所有领域事件
-
-	  //分发领域事件
-	  foreach (var domainEvent in domainEvents)
-	      await mediator.PublishAsync((dynamic)domainEvent, cancellationToken);//dynamic的作用是为了绑定运行时状态
-
-      return true;
-  }
-```
 
 ### 4. IQuery
 
@@ -491,10 +471,11 @@ public sealed class QueryReplicaBehavior<TQueryReplica, TResponse>: IPipelineBeh
 
 ---
 
-## 5. 应用示例
+### 应用示例
 
-### 5.1 Command 类型：继承 ICommand, IValidate, IDistributedLock
+## Command
 
+自定义一个Command并继承 ICommand, IValidate, IDistributedLock
 ```csharp
 public sealed record CreateOrderCommand(
     Guid OrderId,
@@ -503,56 +484,98 @@ public sealed record CreateOrderCommand(
 ) : ICommand<bool>, IValidate<bool>, IDistributedLock<bool>;
 ```
 
-调度器匹配行为：
-- ValidatorBehavior (1)
-- DistributedLockBehavior (2)
-- TransactionBehavior (3)
+在EndPoint、Controller Action、BackgroundHost、gRPC端点或MQ订阅者注入中介者发出这条命令
+
+调度器会从服务提供者获取所需的 PipelineBehavior 并根据 Attribute 的值进行升序排序
+
+排序后的 PipelineBehavior 依次为 ValidatorBehavior 、 DistributedLockBehavior 、 TransactionBehavior
 
 进入顺序：
-1. ValidatorBehavior
-2. DistributedLockBehavior
-3. TransactionBehavior
+- ValidatorBehavior
+- DistributedLockBehavior
+- TransactionBehavior
+
 
 **执行 Handler (CreateOrderCommandHandler)**
+
 
 退出顺序（栈回退）：
 - TransactionBehavior（提交或回滚）
 - DistributedLockBehavior（释放锁）
 - ValidatorBehavior（结束作用域）
 
-### 5.2 一个 Query 类型：继承 IQuery, IQueryCache, IQueryReplica
+
+请求调用顺序如图所示
+![command](https://github.com/user-attachments/assets/19b99c11-ea76-4df0-a4f5-218b0b608f20)
+
+关键点说明：
+
+2.校验Command
+
+4.获取分布式锁
+
+6.开启数据库事务
+
+8.获取数据库数据或向上下文操作
+
+10.savechange并提交事务
+
+12.释放分布式锁
+
+## Query
+
+自定义一个 Query：继承 IQuery, IQueryCache, IQueryReplica
 
 ```csharp
 public sealed record GetUserProfileQuery(Guid UserId)
     : IQuery<UserProfileDto>, IQueryCache<UserProfileDto>, IQueryReplica<UserProfileDto>;
 ```
 
-调度器匹配行为：
-- QueryCacheBehavior (2)
-- QueryReplicaBehavior (3)
+在EndPoint、Controller Action、gRPC端点注入中介者发出这条查询
+
+调度器会从服务提供者获取所需的 PipelineBehavior 并根据 Attribute 的值进行升序排序
+
+排序后的 PipelineBehavior 依次为 QueryCacheBehavior 、 QueryReplicaBehavior
+
 
 进入顺序：
-1. QueryCacheBehavior（尝试命中缓存）
-2. QueryReplicaBehavior（切换到只读库）
+- QueryCacheBehavior（尝试命中缓存，如果命中则短路直接返回结果）
+- QueryReplicaBehavior（切换到只读库）
+
 
 **执行 Handler (GetUserProfileQuery)**
 
+
 退出顺序：
-- QueryReplicaBehavior（还原连接）
-- QueryCacheBehavior（写回缓存）
+- QueryReplicaBehavior
+- QueryCacheBehavior（将查询结果写入缓存）
+
+
+请求调用顺序如图所示
+
+![Query](https://github.com/user-attachments/assets/0a0a76ef-3bd2-498a-bbc4-c58538cf75fe)
+
+
+关键点说明：
+
+2.查询缓存
+
+5.查询从库（如果QueryReplicaBehavior没有切换连接字符串则查询主库）
+
+8.将查询结果写入缓存
 
 若 Query 同时需要校验，可增加 IValidate，则 ValidatorBehavior (1) 会成为最外层。
 
 ---
 
-## 6. DDD 集成：高内聚低耦合的实现方式
+## DDD
 
-通过中介者 + 标记管道行为，让聚合根逻辑与跨领域协作解耦：
+通过中介者 + 标记管道行为 + 领域事件标记接口 来让聚合之间在事务范围内协作：
 
 ### 核心理念
-- 聚合根（Aggregate Root）只暴露行为方法（充血模型）
+- 聚合根（Aggregate Root）暴露行为方法（充血模型）
 - 行为内部修改自身状态并向 `DomainEvents` 集合添加事件对象（对象实现 `IDomainEvent`）
-- 在应用层（CommandHandler）中完成对聚合根的操作后，在请求回到 TransactionBehavior 时拦截(或者调用重写的SaveChanges) SaveChanges：
+- 在应用层（CommandHandler）中完成对聚合根的操作后，在请求回到 TransactionBehavior 时拦截SaveChanges：
   1. 收集所有被追踪实体的 `DomainEvents`
   2. 清空实体上的事件集合（防止重复发布）
   3. 通过 Mediator 发布每一个事件（`IDomainEvent : INotification`）
@@ -560,12 +583,25 @@ public sealed record GetUserProfileQuery(Guid UserId)
 - 利用事务行为(TransactionBehavior)：所有级联触发的命令在同一事务内运行，在代码层面实现类似数据库触发器的效果
 
 ### 示例抽象
+
+领域事件标记接口
 ```csharp
 public interface IDomainEvent : INotification
 {
     DateTime OccurredOn { get; }
 }
+```
 
+领域事件处理者标记接口
+```csharp
+public interface IDomainEventHandler<TDomainEvent> : INotificationHandler<TDomainEvent>
+ where TDomainEvent : IDomainEvent
+{
+}
+```
+
+聚合根抽象类
+```csharp
 public abstract class AggregateRoot
 {
     private readonly List<IDomainEvent> _domainEvents = new();
@@ -575,7 +611,42 @@ public abstract class AggregateRoot
 }
 ```
 
+重写SaveEntitiesAsync
+```csharp
+  public async Task<bool> SaveEntitiesAsync(CancellationToken cancellationToken = default)
+  {
+      //先持久化实体
+      await base.SaveChangesAsync(cancellationToken);
+
+	  //查询所有已跟踪且拥有领域事件的实体（或聚合根）
+
+	  //获取所有领域事件
+
+	  //清空聚合根中所有领域事件
+
+	  //分发领域事件
+	  foreach (var domainEvent in domainEvents)
+	      await mediator.PublishAsync((dynamic)domainEvent, cancellationToken);//dynamic的作用是为了绑定运行时状态
+
+      return true;
+  }
+```
+
 ### 聚合示例
+
+确认订单命令
+```csharp
+public sealed record OrderConfirmedCommand(Guid OrderId):ICommand<bool>;
+```
+
+
+确认订单领域事件
+```csharp
+public sealed record OrderConfirmedDomainEvent(Guid OrderId):IDomainEvent;
+```
+
+
+订单聚合根
 ```csharp
 public sealed class Order : AggregateRoot
 {
@@ -583,100 +654,80 @@ public sealed class Order : AggregateRoot
     public Guid UserId { get; private set; }
     public List<OrderLine> Lines { get; private set; } = new();
 
-    public void AddLine(Guid productId, int quantity, decimal price)
-    {
-        Lines.Add(new OrderLine(productId, quantity, price));
-        AddDomainEvent(new OrderLineAddedDomainEvent(Id, productId));
-    }
-
-    public void Confirm()
+    public void Confirm(Guid orderId)
     {
         // ...业务校验
-        AddDomainEvent(new OrderConfirmedDomainEvent(Id, UserId));
+        AddDomainEvent(new OrderConfirmedDomainEvent(orderId));
     }
 }
 ```
 
-### 在 CommandHandler 中
+确认订单命令处理者
 ```csharp
-public sealed class CreateOrderCommandHandler 
-    : ICommandHandler<CreateOrderCommand, bool>
+public sealed class OrderConfirmedCommandHandler(Repo<Order> repo) 
+    : ICommandHandler<OrderConfirmedCommand, bool>
 {
-    private readonly AppDbContext _db;
-    private readonly IMediator _mediator;
-
-    public bool Handle(CreateOrderCommand cmd)
+    public async Task<string> HandleAsync(OrderConfirmedCommand request, CancellationToken cancellationToken = default)
     {
-        var order = new Order(cmd.OrderId, cmd.UserId);
-        foreach (var l in cmd.Lines)
-            order.AddLine(l.ProductId, l.Quantity, l.Price);
+        var order = await repo.GeyByIdAsync(request.OrderId,cancellationToken);
 
-        //CommandHandler中一般不需要手动SaveChange、Commit、RollBack，这些操作交给TransactionBehavior即可
-        //_db.Orders.Add(order);
-        //_db.SaveChanges();
+        order.Confirm(request.OrderId);
 
-        // CommandHandler执行完之后，请求会回到 TransactionBehavior 的 next() 之后
         return true;
     }
-
-    // SaveChanges 重载方法里：
-    // 1. 调用 SaveChanges 将变更的数据作用于数据库，但不提交事务
-    // 2. 收集所有状态为已变更的聚合根的 DomainEvents
-    // 3. 清空 DomainEvents
-    // 4. 通过中介者 Publish 事件 -> 触发对应的 INotificationHandler
-    // 5. 假如 INotificationHandler 中通过中介者触发了新的级联 Command ，新的 Command 依然包裹在前面开启的事务中，如果没有新的 Command 则提交事务
 }
-
 ```
 
-### 事件驱动的协作
-例如 `OrderConfirmedDomainEventHandler` 触发：
-- 发送积分累加命令（通过中介者触发新的 Command,新 Command 复用事务）
-- 分发消息到外部系统（比如同步数据到ES、基于TagBase删除Redis中对应的缓存、或是将向MQ发送集成事件）
+### 领域事件示例
 
-### 优势
-- 高内聚：聚合行为与领域事件聚焦本身逻辑
-- 低耦合：跨聚合协作通过事件编排
-- 关注点分离：验证、事务、锁、缓存、读库路由全部由管道行为处理
-- 可测试性：每个 Handler / Behavior / Aggregate 可独立测试
-- 可插拔：新增一个行为仅需实现 `IPipelineBehavior` + 标记接口策略，即自动参与链
+
+删除订单相关的缓存处理者
+```csharp
+public sealed class DeleteCacheDomainEventHandler(IDistributedCache cache): IDomainEventHandler<OrderConfirmedDomainEvent>
+{
+	public async Task HandleAsync(OrderConfirmedDomainEvent notification, CancellationToken cancellationToken = default)
+	{
+		await cache.DeleteByTag(Tag.Order, cancellationToken);
+	}
+}
+```
+
+
+发出新的命令处理者
+```csharp
+public sealed class SendCommandDomainEventHandler(IMediator mediator): IDomainEventHandler<OrderConfirmedDomainEvent>
+{
+	public async Task HandleAsync(OrderConfirmedDomainEvent notification, CancellationToken cancellationToken = default)
+	{
+		await mediator.SendAsync(/* 实例化其他新的命令 */);
+	}
+}
+```
+
+
+向MQ发送集成事件处理者
+```csharp
+public sealed class PublishToMQDomainEventHandler: IDomainEventHandler<OrderConfirmedDomainEvent>
+{
+	public async Task HandleAsync(OrderConfirmedDomainEvent notification, CancellationToken cancellationToken = default)
+	{
+		//用开箱模式向mq发送集成事件
+	}
+}
+```
+
+
+### 事件驱动的优势
+- 领域逻辑与边缘影响分离
+- 横向拓展边缘影响分离
+- 发送积分累加命令（通过中介者触发新的 Command 且事务复用）
+- 分发消息到外部系统（比如同步数据到ES、基于标签删除Redis中对应的缓存、或是将向MQ发送集成事件）
+
 
 ---
 
-## 7. 行为优先级与顺序总结
 
-| 优先级 | 建议放置的职责 | 原因 |
-|--------|----------------|------|
-| 1 | 校验（Validator） | 最早失败，避免后续资源消耗 |
-| 2 | 分布式锁 / 缓存 | 锁要在事务前；缓存查询前置可短路 |
-| 3 | 事务 / 读库切换 | 事务应包裹核心执行；读库路由在缓存后 |
-
-进入：1 → 2 → 3 → Handler  
-退出：Handler → 3 → 2 → 1
-
----
-
-## 8. 使用建议
-
-- 聚合根仅暴露行为方法，不直接让外层修改集合属性
-- 在事务行为中确保领域事件发布时机（保存后但未提交 / 提交前 / 提交后）根据业务选择
-- 对幂等的领域事件设计“事件去重”策略（可记录事件 ID）
-- 分布式锁注意锁粒度（使用 Request 的业务键而非全局键）
-- QueryCache 行为需根据 Request 序列化键（可实现 ICacheKeyProvider）
-
----
-
-## 9. FAQ
-
-| 问题 | 解答 |
-|------|------|
-| 为什么使用标记接口而不是特性？ | 标记接口更易于在类型系统内组合与扫描，且可与泛型约束协同。 |
-| 如何避免行为过多导致性能下降？ | 控制行为拆分粒度，合并低复杂度行为；增加 Metrics 监控。 |
-| 领域事件是否会导致循环触发？ | 需要在设计上避免命令互相生成同类事件；可加入“事件深度”限制。 |
-
----
-
-## 10. 致谢与贡献
+## 致谢与贡献
 
 欢迎通过 [Issues](https://github.com/deepdarkfantasiesa/DDF.Mediator/issues) 与 Pull Requests 参与：
 - 新增行为
