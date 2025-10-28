@@ -473,7 +473,7 @@ public sealed class QueryReplicaBehavior<TQueryReplica, TResponse>: IPipelineBeh
 
 ### 应用示例
 
-## Command
+#### 1. Command
 
 自定义一个Command并继承 ICommand, IValidate, IDistributedLock
 ```csharp
@@ -522,7 +522,7 @@ public sealed record CreateOrderCommand(
 
 12.释放分布式锁
 
-## Query
+#### 2. Query
 
 自定义一个 Query：继承 IQuery, IQueryCache, IQueryReplica
 
@@ -568,11 +568,11 @@ public sealed record GetUserProfileQuery(Guid UserId)
 
 ---
 
-## DDD
+#### 3. DDD
 
 通过中介者 + 标记管道行为 + 领域事件标记接口 来让聚合之间在事务范围内协作：
 
-### 核心理念
+##### 核心理念
 - 聚合根（Aggregate Root）暴露行为方法（充血模型）
 - 行为内部修改自身状态并向 `DomainEvents` 集合添加事件对象（对象实现 `IDomainEvent`）
 - 在应用层（CommandHandler）中完成对聚合根的操作后，在请求回到 TransactionBehavior 时拦截SaveChanges：
@@ -582,7 +582,7 @@ public sealed record GetUserProfileQuery(Guid UserId)
   4. 由对应的事件 Handler（可能触发新的 Command）进行跨聚合协作
 - 利用事务行为(TransactionBehavior)：所有级联触发的命令在同一事务内运行，在代码层面实现类似数据库触发器的效果
 
-### 示例抽象
+##### 示例抽象
 
 领域事件标记接口
 ```csharp
@@ -632,19 +632,17 @@ public abstract class AggregateRoot
   }
 ```
 
-### 聚合示例
+##### 聚合示例
 
 确认订单命令
 ```csharp
 public sealed record OrderConfirmedCommand(Guid OrderId):ICommand<bool>;
 ```
 
-
 确认订单领域事件
 ```csharp
 public sealed record OrderConfirmedDomainEvent(Guid OrderId):IDomainEvent;
 ```
-
 
 订单聚合根
 ```csharp
@@ -678,7 +676,7 @@ public sealed class OrderConfirmedCommandHandler(Repo<Order> repo)
 }
 ```
 
-### 领域事件示例
+##### 领域事件示例
 
 
 删除订单相关的缓存处理者
@@ -717,11 +715,11 @@ public sealed class PublishToMQDomainEventHandler: IDomainEventHandler<OrderConf
 ```
 
 
-### 事件驱动的优势
+##### 事件驱动的优势
 - 领域逻辑与边缘影响分离
-- 横向拓展边缘影响分离
-- 发送积分累加命令（通过中介者触发新的 Command 且事务复用）
-- 分发消息到外部系统（比如同步数据到ES、基于标签删除Redis中对应的缓存、或是将向MQ发送集成事件）
+- 横向拓展边缘影响（可以有多个处理者）
+- 事务一致（在领域事件处理者中通过中介者发出新的命令也在原有的事件之中）
+- 不同的领域之间解耦
 
 
 ---
