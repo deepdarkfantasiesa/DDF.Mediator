@@ -1,15 +1,40 @@
 # DDF.Mediator
 
-一款轻量级中介者，通过可排序管道行为将不同的横切关注点构建为责任链，使代码更专注于业务逻辑的设计、更加模块化、更易于单元测试，让开发人员更快速构建出命令查询职责分离（CQRS）+领域驱动设计（DDD）架构
+一款轻量级中介者，通过可排序管道行为将不同的横切关注点构建为责任链，使代码更加模块化、更专注于业务逻辑、更易于单元测试，让开发人员更快速构建出命令查询职责分离（CQRS）+领域驱动设计（DDD）架构
 
 > 当前仍处在快速演进阶段，接口可能调整。
 
 ---
 
-## 基本使用
-所有Handler和PipelineBehavior都会在IServiceCollection的拓展函数AddMediator里被注册为Transient,所以写在里面的代码应该是无状态的
+## 基本说明
 
-首先定义一个Request
+| 分类 | 内容 | 生命周期  | 是否为密封类（Sealed） |
+|------|------|----------------|-----------|
+| 标记接口实现 | `IRequest<>`、`INotification`、`IStream<>` 的实现类 | 无生命周期 | 是 |
+| 标记接口实现（管道行为） | `IPipelineBehavior<,>` 的实现类 | `Transient` | 是 |
+| 处理者实现 | `IRequestHandler<,>`、`INotificationHandler<>`、`IStreamHandler<,>` 的实现类 | `Transient` | 是 |
+| 调度中心对象 | 通过 `IMediator`、`IRequestSender`、`INotificationPublisher`、`IStreamSender` 获取的调度中心实例 | `Transient` | 是 |
+
+## 安装
+在 "管理NuGet包" 中搜索 "DDF.mediator"
+
+可以看到两个包，分别是 "DDF.Mediator.Abstractions" 、 "DDF.Mediator" 
+
+ "DDF.Mediator.Abstractions" 中是标记接口的包
+
+ "DDF.Mediator" 是调度中心的实现包
+
+项目可根据需要在抽象层安装 "DDF.Mediator.Abstractions" ，在应用层安装 "DDF.Mediator" 
+
+## 基本使用
+
+让程序启动时扫描程序集注册所有Handler
+```csharp
+builder.Services.AddMediator();
+```
+
+### 1.Request
+首先定义一个IRequest<>的继承类
 ```csharp
 public sealed record Ping:IRequest<string>
 {
@@ -28,11 +53,6 @@ public sealed class Pong: IRequestHandler<Ping, string>
 }
 ```
 
-让程序启动时扫描程序集注册所有Handler
-```csharp
-builder.Services.AddMediator();
-```
-
 最后通过中介者调用
 ```csharp
 //从依赖注入容器中通过IMediator和IRequestSender分别获取mediator、sender，
@@ -49,7 +69,7 @@ await sender.SendAsync<Ping, string>(new Ping { Echo = "Ping*" });//Ping*Pong
 
 定义管道行为，注意一定要指定优先级
 ```csharp
-[PipelineBehaviorPriority(0)]
+[PipelineBehaviorPriority(0)]//指定管道行为的优先级
 public sealed class TestBehavior<TRequest, TResponse>(ILogger<TestBehavior<TRequest, TResponse>> logger): IPipelineBehavior<TRequest, TResponse>
 	where TRequest : IRequest<TResponse>
 {
@@ -68,7 +88,115 @@ public sealed class TestBehavior<TRequest, TResponse>(ILogger<TestBehavior<TRequ
 builder.Services.AddMediator(typeof(TestBehavior<,>));
 ```
 
-最后回再使用IMediator或IRequestSender以Ping对象为参数发送请求，可以发现运行Pong之前控制台会输出"TestBehavior-Before"，运行Pong之后控制台会输出"TestBehavior-After"，不同的PipelineBehavior可以按照优先级从小到大的顺序嵌套在最终的Handler外层;
+最后再回到使用IMediator或IRequestSender以Ping对象为参数发送请求，可以发现运行Pong之前控制台会输出"TestBehavior-Before"，运行Pong之后控制台会输出"TestBehavior-After"，不同的PipelineBehavior可以按照优先级从小到大的顺序嵌套在最终的Handler外层;
+
+### 2.Notification
+
+定义一个INotification的继承类
+
+```csharp
+public sealed record Bye: INotification
+{
+	public string SaySomeThing { get; init; }
+}
+```
+
+然后定义两个（也可以更多）对应的Handler
+```csharp
+public sealed class Hi(ILogger<Hi> logger): INotificationHandler<Bye>
+{
+	public async Task HandleAsync(Bye notification, CancellationToken cancellationToken = default)
+	{
+		logger.LogInformation($"hi!{notification.SaySomeThing}");
+	}
+}
+
+public sealed class Hello(ILogger<Hello> logger): INotificationHandler<Bye>
+{
+	public async Task HandleAsync(Bye notification, CancellationToken cancellationToken = default)
+	{
+		logger.LogInformation($"hello~{notification.SaySomeThing}");
+	}
+}
+```
+
+最后通过中介者调用
+```csharp
+//从依赖注入容器中通过IMediator和INotificationPublisher分别获取mediator、publisher，
+//通过以下四种方式调用
+//NotificationHandler的执行是串行但不保证顺序的
+//NotificationHandler的执行不会套用PipelineBehavior
+
+await mediator.PublishAsync(new Bye { SaySomeThing = "see you tomorrow" });//可以看到控制台输出"hi!see you tomorrow"、"hello~see you tomorrow"
+
+await mediator.PublishAsync<Bye>(new Bye { SaySomeThing = "see you soon" });//"hi!see you soon"、"hello~see you soon"
+
+await publisher.PublishAsync(new Bye { SaySomeThing = "goodbye" });//"hi!goodbye"、"hello~goodbye"
+
+await publisher.PublishAsync<Bye>(new Bye { SaySomeThing = "bye bye" });//"hi!bye bye"、"hello~bye bye"
+
+```
+
+### 3.Stream
+
+定义一个IStream<>的继承类
+```csharp
+public sealed record Week:IStream<string>
+{
+	public string WhatADay { get; init; }
+}
+```
+
+再定义一个对应的IStreamHandler
+```csharp
+public sealed class EachDay: IStreamHandler<Week, string>
+{
+	public async IAsyncEnumerable<string> HandleAsync(Week request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+	{
+		var days = new List<string> { "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday" };
+
+		foreach (var day in days) 
+		{
+			cancellationToken.ThrowIfCancellationRequested();
+			yield return request.WhatADay + day;
+			await Task.Delay(10, cancellationToken); // 模拟异步
+		}
+	}
+}
+```
+
+最后通过中介者调用
+```csharp
+//从依赖注入容器中通过IMediator和IStreamSender分别获取mediator、streamSender，
+//通过以下四种方式调用
+//IStreamHandler的执行不会套用PipelineBehavior
+
+var workDays = new List<string>();//{ "workMonday", "workTuesday", "workWednesday", "workThursday", "workFriday", "workSaturday", "workSunday" }
+await foreach(var item in mediator.StreamAsync(new Week { WhatADay = "work" }))
+{
+    workDays.Add(item);
+}
+
+var restDays = new List<string>();//{ "restMonday", "restTuesday", "restWednesday", "restThursday", "restFriday", "restSaturday", "restSunday" }
+await foreach(var item in mediator.StreamAsync<Week, string>(new Week { WhatADay = "rest" }))
+{
+	restDays.Add(item);
+}
+
+var holidayDays = new List<string>();//{ "holidayMonday", "holidayTuesday", "holidayWednesday", "holidayThursday", "holidayFriday", "holidaySaturday", "holidaySunday" }
+await foreach(var item in streamSender.StreamAsync(new Week { WhatADay = "holiday" })) 
+{
+	holidayDays.Add(item);
+}
+
+var vacations = new List<string>();//{ "vacationMonday", "vacationTuesday", "vacationWednesday", "vacationThursday", "vacationFriday", "vacationSaturday", "vacationSunday" }
+await foreach(var item in streamSender.StreamAsync<Week, string>(new Week { WhatADay = "vacation" })) 
+{
+	vacations.Add(item);
+}
+
+```
+
 
 ## 1. 核心抽象层 (Abstractions)
 
