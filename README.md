@@ -198,60 +198,64 @@ await foreach(var item in streamSender.StreamAsync<Week, string>(new Week { What
 ```
 
 
-## 1. 核心抽象层 (Abstractions)
+## 核心抽象层 (Abstractions)
 
-本框架的精髓在于抽象层，主角包括：
-
-### 1.1 IPipelineBehavior
+### 1. IPipelineBehavior
 定义请求执行的“可插拔处理环节”。特点：
 - 可通过 Attribute（例如 `[PipelineBehaviorPriority(1)]`）在实现类上配置指定优先级。
 - 支持在构建执行链时排序。
 - 形成“先进后出”（栈式包裹）调用模型：最优先的行为最先进入、最后退出。
 
-### 1.2 IRequest
-表示一个“需唯一 Handler 处理”的请求类型。  
+### 2. IRequest  
 一个具体 Request（继承 `IRequest<TResponse>`）：
 - 对应 1 个 Handler（`IRequestHandler<TRequest,TResponse>`）
 - 可匹配多个管道行为：框架根据该 Request 额外实现的标记接口（例如 `IValidate`, `ICommand` 等）筛选管道集合，排序后封装成责任链。
 - 管道行为按优先级构建调用包裹，体现“先进后出”。
 
-### 1.3 INotification
+### 3. INotification
 表示一个“可广播”的事件消息：
 - 一个 `INotification` 对应 N 个 `INotificationHandler<TNotification>`。
 - 可用于领域事件分发 / 集成事件转换等。
 
-### 1.4 IStream（流式响应）
+### 4. IStream（流式响应）
 用于长任务 / 数据分段返回 / 推送式处理：
 - 按需消费，降低一次性内存压力
 - 支持实时/大数据分页、日志拉取、增量同步
 
 ---
 
-## 2. 调度器的核心机制
+## 调度器的核心机制
 
-Request
-1. 收集与当前 Request 类型匹配的所有管道行为实现。
-2. 根据行为的优先级（例如通过 Attribute 或注册配置）进行升序排序。
-3. 构建责任链（Chain of Responsibility）：
+### 1. RequestSender
+
+ 1.1 收集与当前 Request 类型匹配的所有管道行为实现和对应的Handler。
+
+ 1.2 根据行为的优先级（例如通过 Attribute 或注册配置）进行升序排序。
+
+ 1.3 构建责任链（Chain of Responsibility）：
    - 最低数字优先级的行为最外层先执行其“前置逻辑”，然后调用 next
    - 直到最内层的最终 Handler 被调用
    - 返回时按照栈回退顺序执行“后置逻辑”
 
-Notification
-1. 获取所有匹配的Handler
-2. 依次执行Handler（不保证顺序）
+### 2. NotificationPublisher
 
-Stream 
-1.  获取匹配的Handler（单个）
-2.  运行Handler并进行流式返回
+ 2.1 获取所有匹配的Handler（可多个）
 
-## 3. CQRS 扩展：标记接口体系
+ 2.2 依次执行Handler（不保证顺序）
 
-通过继承自 `IRequest<TResponse>` 的标记接口，让调度器“识别所需管道行为”和最终的Handler：
+### 3. StreamSender 
+
+ 3.1 获取与当前Stream匹配的Handler（单个）
+
+ 3.2 运行Handler并进行流式返回
+
+## 进阶使用(CQRS+DDD)
+
+通过继承自 `IRequest<TResponse>` 的标记接口，让调度器识别当前请求继承的接口获取需要被编排进责任链的PiplineBehavior和对应的 Handler：
 
 常用的标记接口有：
 
-| 标记接口 | 作用 | 通常关联的管道行为 |
+| 标记接口 | 作用 | 关联的管道行为 |
 |----------|------|--------------------|
 | IValidate | 需要输入校验 | ValidatorBehavior (优先级 1) |
 | IDistributedLock | 分布式锁保护 | DistributedLockBehavior (优先级 2) |
@@ -264,21 +268,226 @@ Stream
 - **ICommandHandler<TCommand, TResult>**
 - **IQueryHandler<TQuery, TResult>**
 
----
+### 1. IValidate
+验证标记接口
+```csharp
+public interface IValidate<TResponse>: IRequest<TResponse>
+{
+}
+```
 
-## 4. 常用的管道行为（示例设计）
+验证PipelineBehavior
+```csharp
+[PipelineBehaviorPriority(1)]
+public sealed class ValidateBehavior<TValidate, TResponse>: IPipelineBehavior<TValidate, TResponse>
+	where TValidate : IValidate<TResponse>
+{
+	public async Task<TResponse> HandleAsync(TValidate request, NextHandlerDelegate<TResponse> next, CancellationToken cancellationToken = default)
+	{
+		var response = default(TResponse);
 
-由前可知，Request 的调度中心是通过识别 IRequest (及其继承接口)来决定从服务提供者获取哪些管道行为，基于这一点，我们可以做到自定义不同的标记接口和对应的管道行为，为请求对象在被调度的过程中赋予不同的能力
+		//可以通过FluentValidation获取验证逻辑
+		//横向拓展验证逻辑
 
-| 行为 | 优先级(Priority) | 适用 | 说明 |
-|------|------------------|------|------|
-| ValidatorBehavior | 1 | IValidate | 执行数据注解 / FluentValidation；若失败短路 |
-| DistributedLockBehavior | 2 | IDistributedLock | 获取锁（Redis / DB）；执行完释放；支持重入检测 |
-| QueryCacheBehavior | 2 | IQueryCache | 先查缓存；命中则短路返回；未命中执行 next 并写入缓存 |
-| TransactionBehavior | 3 | ICommand | 若当前 DbContext 已有事务则复用，否则开启新事务包裹 next |
-| QueryReplicaBehavior | 3 | IQueryReplica | 在当前作用域将连接字符串/ DbContext 指向只读副本，执行完还原 |
+		response = await next(cancellationToken);
 
-TODO：这里如果有优先级冲突，那么在程序启动注册时就该报错，计划将来支持这一点
+		return response;
+	}
+}
+```
+
+### 2. IDistributedLock
+分布式锁标记接口
+```csharp
+public interface IDistributedLock<TResponse>: IRequest<TResponse>
+{
+}
+```
+
+分布式锁PipelineBehavior
+```csharp
+[PipelineBehaviorPriority(2)]
+public sealed class DistributedLockBehavior<TDistributedLock, TResponse>(ILogger<DistributedLockBehavior<TDistributedLock, TResponse>> logger): IPipelineBehavior<TDistributedLock, TResponse>
+	where TDistributedLock : IDistributedLock<TResponse>
+{
+	public async Task<TResponse> HandleAsync(TDistributedLock request, NextHandlerDelegate<TResponse> next, CancellationToken cancellationToken = default)
+	{
+		var response = default(TResponse);
+
+		//向Redis集群获取红锁
+
+		response = await next(cancellationToken);
+
+		//释放锁
+
+		return response;
+	}
+}
+```
+
+### 3. ICommand
+
+命令标记接口
+```csharp
+public interface ICommand<TResponse>: IRequest<TResponse>
+{
+}
+```
+
+命令处理者标记接口
+```csharp
+public interface ICommandHandler<TCommand, TResponse>:IRequestHandler<TCommand, TResponse>
+	where TCommand : ICommand<TResponse>
+{
+}
+```
+
+数据库事务PipelineBehavior
+```csharp
+[PipelineBehaviorPriority(3)]
+public sealed class TransactionBehavior<TCommand, TResponse>(IDbTransaction _context): IPipelineBehavior<TCommand, TResponse>
+	where TCommand : ICommand<TResponse>
+{
+	public async Task<TResponse> HandleAsync(TCommand request, NextHandlerDelegate<TResponse> next, CancellationToken cancellationToken = default)
+	{
+            var response = default(TResponse);
+
+            try
+            {
+                //判断当前上下文对象是否持有事务
+                if (_context.HasActiveTransaction)
+                {
+                    response = await next(cancellationToken);
+
+                    //持久化聚合并分发领域事件
+                    await _context.SaveEntitiesAsync(cancellationToken);
+                }
+                else
+                {
+                    //开启事务
+                    _context.BeginTransaction(cancellationToken);
+
+                    response = await next(cancellationToken);
+
+                    //持久化聚合并分发领域事件，假如领域事件触发了新的command在这里会有一个递归
+                    await _context.SaveEntitiesAsync(cancellationToken);
+
+                    //提交事务
+                    await _context.CommitTransactionAsync(cancellationToken);
+                }
+                return response;
+            }
+            catch (Exception ex)
+            {
+                //回滚事务
+                await _context.RollbackTransaction(cancellationToken);
+                throw;
+            }
+	}
+}
+```
+
+重写SaveEntitiesAsync
+```csharp
+  public async Task<bool> SaveEntitiesAsync(CancellationToken cancellationToken = default)
+  {
+      //先持久化实体
+      await base.SaveChangesAsync(cancellationToken);
+
+	  //查询所有已跟踪且拥有领域事件的实体（或聚合根）
+
+	  //获取所有领域事件
+
+	  //清空聚合根中所有领域事件
+
+	  //分发领域事件
+	  foreach (var domainEvent in domainEvents)
+	      await mediator.PublishAsync((dynamic)domainEvent, cancellationToken);//dynamic的作用是为了绑定运行时状态
+
+      return true;
+  }
+```
+
+### 4. IQuery
+
+查询标记接口
+
+```csharp
+public interface IQuery<TResponse>: IRequest<TResponse>
+{
+}
+```
+
+查询处理者标记接口
+```csharp
+public interface IQueryHandler<TQuery, TResponse>: IRequestHandler<TQuery, TResponse>
+	where TQuery : IQuery<TResponse>
+{
+}
+```
+
+### 5. IQueryCache
+
+查询缓存标记接口
+
+```csharp
+public interface IQueryCache<TResponse>: IRequest<TResponse>
+{
+}
+```
+
+查询缓存PipelineBehavior
+
+```csharp
+[PipelineBehaviorPriority(2)]
+public sealed class QueryCacheBehavior<TQueryCache, TResponse>: IPipelineBehavior<TQueryCache, TResponse>
+	where TQueryCache : IQueryCache<TResponse>
+{
+	public async Task<TResponse> HandleAsync(TQueryCache request, NextHandlerDelegate<TResponse> next, CancellationToken cancellationToken = default)
+	{
+		var response = default(TResponse);
+
+		//查询一级或二级缓存，如果命中则直接返回结果
+
+		//如果没有命中缓存则视责任链的包装情况往下调用QueryReplicaBehavior<,>或对应的QueryHandler
+		response = await next(cancellationToken);
+
+		//将handler的结果写入分布式缓存并通过分布式缓存通知其他服务插入缓存
+
+		//返回查询结果
+		return response;
+	}
+}
+```
+
+### 6. IQueryReplica
+
+查询从库标记接口
+
+```csharp
+public interface IQueryReplica<TResponse>: IRequest<TResponse>
+{
+}
+```
+
+```csharp
+[PipelineBehaviorPriority(3)]
+public sealed class QueryReplicaBehavior<TQueryReplica, TResponse>: IPipelineBehavior<TQueryReplica, TResponse>
+	where TQueryReplica : IQueryReplica<TResponse>
+{
+	public async Task<TResponse> HandleAsync(TQueryReplica request, NextHandlerDelegate<TResponse> next, CancellationToken cancellationToken = default)
+	{
+		var response = default(TResponse);
+
+		//如果数据库做了集群，可在此处切换数据库连接字符串为同步从库或异步从库，减轻主库的压力
+
+		//调用具体的handler
+		response = await next(cancellationToken);
+
+		return response;
+	}
+}
+```
 
 ---
 
