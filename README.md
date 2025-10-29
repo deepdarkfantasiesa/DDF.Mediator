@@ -1,6 +1,6 @@
 # DDF.Mediator
 
-一款轻量级中介者，让开发者更快速构建出低耦合、高可维护的代码，以及更易于实现命令查询职责分离(CQRS)+领域驱动设计(DDD)架构
+一款轻量级中介者，让开发者快速构建 **命令与查询职责分离(CQRS)+领域驱动设计(DDD)** 架构的项目，让代码的**耦合度更低**、**可维护性更高**
 
 > 当前仍处在快速演进阶段，接口可能调整。
 
@@ -8,7 +8,7 @@
 
 ## 基本约束和说明
 
-| 分类 | 内容 | 生命周期  | 是否为密封类（Sealed） |
+| 分类 | 内容 | 生命周期  | 是否必须声明为密封类（Sealed） |
 |------|------|----------------|-----------|
 | 标记接口实现 | `IRequest<>`、`INotification`、`IStream<>` 的实现类 | 无生命周期 | 是 |
 | 标记接口实现（管道行为） | `IPipelineBehavior<,>` 的实现类 | `Transient` | 是 |
@@ -133,7 +133,7 @@ public sealed class Hello(ILogger<Hello> logger): INotificationHandler<Bye>
 //NotificationHandler的执行是串行但不保证顺序的
 //NotificationHandler的执行不会套用PipelineBehavior
 
-await mediator.PublishAsync(new Bye { SaySomeThing = "see you tomorrow" });//可以看到控制台输出"hi!see you tomorrow"、"hello~see you tomorrow"
+await mediator.PublishAsync(new Bye { SaySomeThing = "see you tomorrow" });//"hi!see you tomorrow"、"hello~see you tomorrow"
 
 await mediator.PublishAsync<Bye>(new Bye { SaySomeThing = "see you soon" });//"hi!see you soon"、"hello~see you soon"
 
@@ -216,8 +216,7 @@ await foreach(var item in streamSender.StreamAsync<Week, string>(new Week { What
 ### 2. IRequest  
 请求标记接口：
 - 对应 1 个 Handler（`IRequestHandler<TRequest,TResponse>`）
-- 可匹配多个管道行为：框架根据该 Request 额外实现的标记接口（例如 `IValidate`, `ICommand` 等）筛选管道集合，排序后封装成责任链。
-- 管道行为按优先级构建调用包裹，体现“先进后出”。
+- 在调用时可被匹配的管道行为构建为调用链。
 - 可自定义返回类型
 
 ### 3. INotification
@@ -260,8 +259,6 @@ await foreach(var item in streamSender.StreamAsync<Week, string>(new Week { What
 
 ## 进阶使用(CQRS+DDD)
 
-通过继承自 `IRequest<TResponse>` 的标记接口，让调度器识别当前请求继承的接口获取需要被编排进责任链的PiplineBehavior和对应的 Handler：
-
 常用的标记接口有：
 
 | 标记接口 | 作用 | 关联的管道行为 |
@@ -272,10 +269,8 @@ await foreach(var item in streamSender.StreamAsync<Week, string>(new Week { What
 | **IQuery** | 查询语义（只读） | 可与 QueryReplica / QueryCache 联用 |
 | IQueryCache | 需要缓存 | QueryCacheBehavior (优先级 2) |
 | IQueryReplica | 走只读库 / 切换连接字符串 | QueryReplicaBehavior (优先级 3) |
-
-处理者标记接口（继承自 `IRequestHandler<TRequest,TResponse>`）进一步让语义明确：
-- **ICommandHandler<TCommand, TResult>**
-- **IQueryHandler<TQuery, TResult>**
+| **ICommandHandler<TCommand, TResult>** | 命令处理者 | / |
+| **IQueryHandler<TQuery, TResult>** | 查询处理者 | / |
 
 ### 1. IValidate
 验证标记接口
@@ -582,7 +577,7 @@ public sealed record GetUserProfileQuery(Guid UserId)
 
 8.将查询结果写入缓存
 
-若 Query 同时需要校验，可增加 IValidate，则 ValidatorBehavior (1) 会成为最外层。
+若 GetUserProfileQuery 同时需要校验，可追加继承 IValidate<UserProfileDto>，则 ValidatorBehavior 会成为调用责任链的最外层。
 
 ---
 
@@ -593,7 +588,7 @@ public sealed record GetUserProfileQuery(Guid UserId)
 ##### 核心理念
 - 聚合根（Aggregate Root）暴露行为方法（充血模型）
 - 行为内部修改自身属性并向 `DomainEvents` 集合添加事件对象（对象实现 `IDomainEvent`）
-- 在应用层（CommandHandler）中完成对聚合的操作后，在请求回到 TransactionBehavior 时拦截SaveChanges：
+- 在应用层（CommandHandler）中完成对聚合的操作后，在请求回到 TransactionBehavior 时拦截SaveChanges(见后自定义的SaveEntitiesAsync)：
   1. 收集所有被追踪实体的 `DomainEvents`
   2. 清空实体上的事件集合（防止重复发布）
   3. 通过 Mediator 发布每一个事件（`IDomainEvent : INotification`）
@@ -606,7 +601,6 @@ public sealed record GetUserProfileQuery(Guid UserId)
 ```csharp
 public interface IDomainEvent : INotification
 {
-    DateTime OccurredOn { get; }
 }
 ```
 
@@ -644,7 +638,7 @@ public abstract class AggregateRoot
 
 	  //分发领域事件
 	  foreach (var domainEvent in domainEvents)
-	      await mediator.PublishAsync((dynamic)domainEvent, cancellationToken);//dynamic的作用是为了绑定运行时状态
+	      await mediator.PublishAsync((dynamic)domainEvent, cancellationToken);//dynamic的作用是为了绑定领域事件的运行时类型
 
       return true;
   }
@@ -654,7 +648,7 @@ public abstract class AggregateRoot
 
 确认订单命令
 ```csharp
-public sealed record OrderConfirmedCommand(Guid OrderId):ICommand<bool>;
+public sealed record OrderConfirmedCommand(Guid OrderId):ICommand<bool>, IValidate<bool>, IDistributedLock<bool>;
 ```
 
 确认订单领域事件
@@ -738,13 +732,13 @@ public sealed class PublishToMQDomainEventHandler: IDomainEventHandler<OrderConf
 
 6 - 19 都处在同一数据库的事务中，聚合间交互的触发点在领域事件处理者的中介者发出新的命令
 
-10.savechange
+10.SaveEntitiesAsync
 
 11.分发已改变跟踪状态聚合根中的领域事件(DomainEvent)
 
 12.领域事件处理者的调用是串行但不保证顺序的，所以三个处理者对外部的调用都归为同一级
 
-16.savechange
+16.SaveEntitiesAsync
 
 17.分发领域事件
 
