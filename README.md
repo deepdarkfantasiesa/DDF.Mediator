@@ -571,15 +571,14 @@ public sealed record GetUserProfileQuery(Guid UserId)
 
 
 请求调用顺序如图所示
-
-![Query](https://github.com/user-attachments/assets/0a0a76ef-3bd2-498a-bbc4-c58538cf75fe)
+![Query](https://github.com/user-attachments/assets/763e66f7-5e38-401c-9bb6-a81c74a3fdb5)
 
 
 关键点说明：
 
 2.查询缓存
 
-5.查询从库（如果QueryReplicaBehavior没有切换连接字符串则查询主库）
+5.查询从库或主库（如果QueryReplicaBehavior没有切换连接字符串则查询主库）
 
 8.将查询结果写入缓存
 
@@ -730,6 +729,28 @@ public sealed class PublishToMQDomainEventHandler: IDomainEventHandler<OrderConf
 	}
 }
 ```
+
+请求调用顺序如图所示
+![DomainEvent](https://github.com/user-attachments/assets/cb3e9f9a-2d00-4fda-907f-e27c5a39f487)
+
+
+关键点说明：
+
+6 - 19 都处在同一数据库的事务中，聚合间交互的触发点在领域事件处理者的中介者发出新的命令
+
+10.savechange
+
+11.分发已改变跟踪状态聚合根中的领域事件(DomainEvent)
+
+12.领域事件处理者的调用是串行但不保证顺序的，所以三个处理者对外部的调用都归为同一级
+
+16.savechange
+
+17.分发领域事件
+
+19.提交数据库事务
+
+21.释放分布式锁
 
 ##### 事件驱动的优势
 - 领域逻辑与边缘影响分离
