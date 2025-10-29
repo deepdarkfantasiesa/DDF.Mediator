@@ -1,12 +1,12 @@
 # DDF.Mediator
 
-一款轻量级中介者，通过可排序管道行为将不同的横切关注点构建为责任链，使代码更加模块化、更专注于业务逻辑、更易于单元测试，让开发人员更快速构建出命令查询职责分离（CQRS）+领域驱动设计（DDD）架构
+一款轻量级中介者，让开发者更快速构建出低耦合、高可维护的代码，以及更易于实现命令查询职责分离(CQRS)+领域驱动设计(DDD)架构
 
 > 当前仍处在快速演进阶段，接口可能调整。
 
 ---
 
-## 基本说明
+## 基本约束和说明
 
 | 分类 | 内容 | 生命周期  | 是否为密封类（Sealed） |
 |------|------|----------------|-----------|
@@ -58,13 +58,13 @@ public sealed class Pong: IRequestHandler<Ping, string>
 //从依赖注入容器中通过IMediator和IRequestSender分别获取mediator、sender，
 //可以通过以下四种方式调用，推荐使用指定泛型类型的方式调用，
 //因为另一种使用了反射，性能理论上不如纯泛型的好
-await mediator.SendAsync(new Ping { Echo = "Ping-" });//Ping-Pong
+var mReflectionResponse = await mediator.SendAsync(new Ping { Echo = "Ping-" });//Ping-Pong
 
-await mediator.SendAsync<Ping, string>(new Ping { Echo = "Ping~" });//Ping~Pong
+var mGenericResponse = await mediator.SendAsync<Ping, string>(new Ping { Echo = "Ping~" });//Ping~Pong
 
-await sender.SendAsync(new Ping { Echo = "Ping%" });//Ping%Pong
+var sReflectionResponse = await sender.SendAsync(new Ping { Echo = "Ping%" });//Ping%Pong
 
-await sender.SendAsync<Ping, string>(new Ping { Echo = "Ping*" });//Ping*Pong
+var sGenericResponse = await sender.SendAsync<Ping, string>(new Ping { Echo = "Ping*" });//Ping*Pong
 ```
 
 定义管道行为，注意一定要指定优先级
@@ -88,7 +88,13 @@ public sealed class TestBehavior<TRequest, TResponse>(ILogger<TestBehavior<TRequ
 builder.Services.AddMediator(typeof(TestBehavior<,>));
 ```
 
-最后再回到使用IMediator或IRequestSender以Ping对象为参数发送请求，可以发现运行Pong之前控制台会输出"TestBehavior-Before"，运行Pong之后控制台会输出"TestBehavior-After"，不同的PipelineBehavior可以按照优先级从小到大的顺序嵌套在最终的Handler外层;
+最后再使用mediator或sender以Ping类型的对象为参数发送请求
+
+可以发现运行Pong之前控制台会输出"TestBehavior-Before"
+
+运行Pong之后控制台会输出"TestBehavior-After"
+
+不同的PipelineBehavior可以按照优先级从小到大的顺序嵌套在最终的Handler外层;
 
 ### 2.Notification
 
@@ -201,21 +207,24 @@ await foreach(var item in streamSender.StreamAsync<Week, string>(new Week { What
 ## 核心抽象层 (Abstractions)
 
 ### 1. IPipelineBehavior
-定义请求执行的“可插拔处理环节”。特点：
+可插拔请求执行管道接口：
 - 可通过 Attribute（例如 `[PipelineBehaviorPriority(1)]`）在实现类上配置指定优先级。
 - 支持在构建执行链时排序。
 - 形成“先进后出”（栈式包裹）调用模型：最优先的行为最先进入、最后退出。
+- 实现类需要直接且只继承IPipelineBehavior
 
 ### 2. IRequest  
-一个具体 Request（继承 `IRequest<TResponse>`）：
+请求标记接口：
 - 对应 1 个 Handler（`IRequestHandler<TRequest,TResponse>`）
 - 可匹配多个管道行为：框架根据该 Request 额外实现的标记接口（例如 `IValidate`, `ICommand` 等）筛选管道集合，排序后封装成责任链。
 - 管道行为按优先级构建调用包裹，体现“先进后出”。
+- 可自定义返回类型
 
 ### 3. INotification
-表示一个“可广播”的事件消息：
+“可广播”的消息标记接口：
 - 一个 `INotification` 对应 N 个 `INotificationHandler<TNotification>`。
 - 可用于领域事件分发 / 集成事件转换等。
+- 无返回值
 
 ### 4. IStream（流式响应）
 用于长任务 / 数据分段返回 / 推送式处理：
@@ -469,6 +478,16 @@ public sealed class QueryReplicaBehavior<TQueryReplica, TResponse>: IPipelineBeh
 }
 ```
 
+最后再向容器注册这些管道行为
+```csharp
+builder.Services.AddMediator(
+	typeof(DistributedLockBehavior<,>),
+	typeof(QueryCacheBehavior<,>),
+	typeof(QueryReplicaBehavior<,>),
+	typeof(TransactionBehavior<,>),
+	typeof(ValidateBehavior<,>));
+```
+
 ---
 
 ### 应用示例
@@ -570,12 +589,12 @@ public sealed record GetUserProfileQuery(Guid UserId)
 
 #### 3. DDD
 
-通过中介者 + 标记管道行为 + 领域事件标记接口 来让聚合之间在事务范围内协作：
+通过 “中介者 + 管道行为 + 领域事件” 来让聚合之间在事务范围内协作：
 
 ##### 核心理念
 - 聚合根（Aggregate Root）暴露行为方法（充血模型）
-- 行为内部修改自身状态并向 `DomainEvents` 集合添加事件对象（对象实现 `IDomainEvent`）
-- 在应用层（CommandHandler）中完成对聚合根的操作后，在请求回到 TransactionBehavior 时拦截SaveChanges：
+- 行为内部修改自身属性并向 `DomainEvents` 集合添加事件对象（对象实现 `IDomainEvent`）
+- 在应用层（CommandHandler）中完成对聚合的操作后，在请求回到 TransactionBehavior 时拦截SaveChanges：
   1. 收集所有被追踪实体的 `DomainEvents`
   2. 清空实体上的事件集合（防止重复发布）
   3. 通过 Mediator 发布每一个事件（`IDomainEvent : INotification`）
@@ -611,7 +630,7 @@ public abstract class AggregateRoot
 }
 ```
 
-重写SaveEntitiesAsync
+自定义的SaveEntitiesAsync
 ```csharp
   public async Task<bool> SaveEntitiesAsync(CancellationToken cancellationToken = default)
   {
@@ -690,7 +709,6 @@ public sealed class DeleteCacheDomainEventHandler(IDistributedCache cache): IDom
 }
 ```
 
-
 发出新的命令处理者
 ```csharp
 public sealed class SendCommandDomainEventHandler(IMediator mediator): IDomainEventHandler<OrderConfirmedDomainEvent>
@@ -702,24 +720,22 @@ public sealed class SendCommandDomainEventHandler(IMediator mediator): IDomainEv
 }
 ```
 
-
 向MQ发送集成事件处理者
 ```csharp
 public sealed class PublishToMQDomainEventHandler: IDomainEventHandler<OrderConfirmedDomainEvent>
 {
 	public async Task HandleAsync(OrderConfirmedDomainEvent notification, CancellationToken cancellationToken = default)
 	{
-		//用开箱模式向mq发送集成事件
+		//用发件箱模式向mq推送集成事件
 	}
 }
 ```
 
-
 ##### 事件驱动的优势
 - 领域逻辑与边缘影响分离
 - 横向拓展边缘影响（可以有多个处理者）
-- 事务一致（在领域事件处理者中通过中介者发出新的命令也在原有的事件之中）
-- 不同的领域之间解耦
+- 事务一致（在领域事件处理者中通过中介者发出新的命令也在原有的事务之中）
+- 不同的聚合之间解耦
 
 
 ---
