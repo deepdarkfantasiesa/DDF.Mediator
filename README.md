@@ -207,7 +207,7 @@ await foreach(var item in streamSender.StreamAsync<Week, string>(new Week { What
 ## 核心抽象层 (Abstractions)
 
 ### 1. IPipelineBehavior
-可插拔请求执行管道接口：
+请求执行管道接口：
 - 可通过 Attribute（例如 `[PipelineBehaviorPriority(1)]`）在实现类上配置指定优先级。
 - 支持在构建执行链时排序。
 - 形成“先进后出”（栈式包裹）调用模型：最优先的行为最先进入、最后退出。
@@ -489,7 +489,7 @@ builder.Services.AddMediator(
 
 #### 1. Command
 
-自定义一个Command并继承 ICommand, IValidate, IDistributedLock
+定义一个Command并继承 ICommand, IValidate, IDistributedLock
 ```csharp
 public sealed record CreateOrderCommand(
     Guid OrderId,
@@ -498,7 +498,22 @@ public sealed record CreateOrderCommand(
 ) : ICommand<bool>, IValidate<bool>, IDistributedLock<bool>;
 ```
 
+再定义一个对应的CommandHandler
+```csharp
+public sealed class CreateOrderCommandHandler: ICommandHandler<CreateOrderCommand, bool>
+{
+	public async Task<bool> HandleAsync(CreateOrderCommand request, CancellationToken cancellationToken = default)
+	{
+		/* 业务逻辑 */
+		return true;
+	}
+}
+```
+
 在EndPoint、Controller Action、BackgroundHost、gRPC端点或MQ订阅者注入中介者发出这条命令
+```csharp
+var response = await mediator.SendAsync<CreateOrderCommand, bool>(new CreateOrderCommand { /* 其他属性 */ });
+```
 
 调度器会从服务提供者获取所需的 PipelineBehavior 并根据 Attribute 的值进行升序排序
 
@@ -538,14 +553,28 @@ public sealed record CreateOrderCommand(
 
 #### 2. Query
 
-自定义一个 Query：继承 IQuery, IQueryCache, IQueryReplica
-
+定义一个 Query：继承 IQuery, IQueryCache, IQueryReplica
 ```csharp
 public sealed record GetUserProfileQuery(Guid UserId)
     : IQuery<UserProfileDto>, IQueryCache<UserProfileDto>, IQueryReplica<UserProfileDto>;
 ```
 
+再定义一个对应的QueryHandler
+```csharp
+public sealed class GetUserProfileQueryHandler: IQueryHandler<GetUserProfileQuery, UserProfileDto>
+{
+	public async Task<UserProfileDto> HandleAsync(GetUserProfileQuery request, CancellationToken cancellationToken = default)
+	{
+		/* 查询语句 */
+		return null;
+	}
+}
+```
+
 在EndPoint、Controller Action、gRPC端点注入中介者发出这条查询
+```csharp
+var response = await mediator.SendAsync<GetUserProfileQuery, UserProfileDto>(new GetUserProfileQuery { /* 其他属性 */ });
+```
 
 调度器会从服务提供者获取所需的 PipelineBehavior 并根据 Attribute 的值进行升序排序
 
