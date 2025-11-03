@@ -3,16 +3,16 @@
 	/// <summary>
 	/// 下一个处理者的委托
 	/// </summary>
-	/// <typeparam name="TResponse"></typeparam>
-	/// <param name="cancellationToken"></param>
+	/// <typeparam name="TResponse">响应类型</typeparam>
+	/// <param name="cancellationToken">取消token</param>
 	/// <returns></returns>
 	public delegate Task<TResponse> NextHandlerDelegate<TResponse>(CancellationToken cancellationToken = default);
 
 	/// <summary>
 	/// 管道行为标记接口
 	/// </summary>
-	public interface IPipelineBehavior<TRequest,TResponse>
-		where TRequest: IRequest<TResponse>
+	public interface IPipelineBehavior<in TRequest, TResponse>
+		where TRequest : IRequest<TResponse>
 	{
 		/// <summary>
 		/// 管道处理
@@ -28,7 +28,7 @@
 	/// 管道行为优先级特性
 	/// 数字越小优先级越高
 	/// </summary>
-	[AttributeUsage (AttributeTargets.Class, AllowMultiple = false, Inherited = false)]
+	[AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = false)]
 	public sealed class PipelineBehaviorPriorityAttribute: Attribute
 	{
 		/// <summary>
