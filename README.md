@@ -34,7 +34,7 @@ builder.Services.AddMediator();
 ```
 
 ### 1.Request
-首先定义一个IRequest<>的继承类
+第一步，定义一个IRequest<>的继承类
 ```csharp
 public sealed record Ping:IRequest<string>
 {
@@ -42,7 +42,7 @@ public sealed record Ping:IRequest<string>
 }
 ```
 
-再定义一个对应的RequestHandler
+第二步，定义一个对应的RequestHandler
 ```csharp
 public sealed class Pong: IRequestHandler<Ping, string>
 {
@@ -53,7 +53,7 @@ public sealed class Pong: IRequestHandler<Ping, string>
 }
 ```
 
-最后通过中介者调用
+第三步，通过中介者调用
 ```csharp
 //从依赖注入容器中通过IMediator和IRequestSender分别获取mediator、sender，
 //可以通过以下四种方式调用，推荐使用指定泛型类型的方式调用，
@@ -98,7 +98,7 @@ builder.Services.AddMediator(typeof(TestBehavior<,>));
 
 ### 2.Notification
 
-定义一个INotification的继承类
+第一步，定义一个INotification的继承类
 
 ```csharp
 public sealed record Bye: INotification
@@ -107,7 +107,7 @@ public sealed record Bye: INotification
 }
 ```
 
-然后定义两个（也可以更多）对应的Handler
+第二步，定义两个（也可以更多）对应的Handler
 ```csharp
 public sealed class Hi(ILogger<Hi> logger): INotificationHandler<Bye>
 {
@@ -126,7 +126,7 @@ public sealed class Hello(ILogger<Hello> logger): INotificationHandler<Bye>
 }
 ```
 
-最后通过中介者调用
+第三步，通过中介者调用
 ```csharp
 //从依赖注入容器中通过IMediator和INotificationPublisher分别获取mediator、publisher，
 //通过以下四种方式调用
@@ -145,7 +145,7 @@ await publisher.PublishAsync<Bye>(new Bye { SaySomeThing = "bye bye" });//"hi!by
 
 ### 3.Stream
 
-定义一个IStream<>的继承类
+第一步，定义一个IStream<>的继承类
 ```csharp
 public sealed record Week:IStream<string>
 {
@@ -153,7 +153,7 @@ public sealed record Week:IStream<string>
 }
 ```
 
-再定义一个对应的IStreamHandler
+第二步，定义一个对应的IStreamHandler
 ```csharp
 public sealed class EachDay: IStreamHandler<Week, string>
 {
@@ -171,7 +171,7 @@ public sealed class EachDay: IStreamHandler<Week, string>
 }
 ```
 
-最后通过中介者调用
+第三步，通过中介者调用
 ```csharp
 //从依赖注入容器中通过IMediator和IStreamSender分别获取mediator、streamSender，
 //通过以下四种方式调用
@@ -489,7 +489,7 @@ builder.Services.AddMediator(
 
 #### 1. Command
 
-定义一个Command并继承 ICommand, IValidate, IDistributedLock
+第一步，定义一个Command并继承 ICommand, IValidate, IDistributedLock
 ```csharp
 public sealed record CreateOrderCommand(
     Guid OrderId,
@@ -498,7 +498,7 @@ public sealed record CreateOrderCommand(
 ) : ICommand<bool>, IValidate<bool>, IDistributedLock<bool>;
 ```
 
-再定义一个对应的CommandHandler
+第二步，定义一个对应的CommandHandler
 ```csharp
 public sealed class CreateOrderCommandHandler: ICommandHandler<CreateOrderCommand, bool>
 {
@@ -510,7 +510,7 @@ public sealed class CreateOrderCommandHandler: ICommandHandler<CreateOrderComman
 }
 ```
 
-在EndPoint、Controller Action、BackgroundHost、gRPC端点或MQ订阅者注入中介者发出这条命令
+第三步，在EndPoint、Controller Action、BackgroundHost、gRPC端点或MQ订阅者注入中介者发出这条命令
 ```csharp
 var response = await mediator.SendAsync<CreateOrderCommand, bool>(new CreateOrderCommand { /* 其他属性 */ });
 ```
@@ -553,13 +553,13 @@ var response = await mediator.SendAsync<CreateOrderCommand, bool>(new CreateOrde
 
 #### 2. Query
 
-定义一个 Query：继承 IQuery, IQueryCache, IQueryReplica
+第一步，定义一个 Query：继承 IQuery, IQueryCache, IQueryReplica
 ```csharp
 public sealed record GetUserProfileQuery(Guid UserId)
     : IQuery<UserProfileDto>, IQueryCache<UserProfileDto>, IQueryReplica<UserProfileDto>;
 ```
 
-再定义一个对应的QueryHandler
+第二步，定义一个对应的QueryHandler
 ```csharp
 public sealed class GetUserProfileQueryHandler: IQueryHandler<GetUserProfileQuery, UserProfileDto>
 {
@@ -571,7 +571,7 @@ public sealed class GetUserProfileQueryHandler: IQueryHandler<GetUserProfileQuer
 }
 ```
 
-在EndPoint、Controller Action、gRPC端点注入中介者发出这条查询
+第三步，在EndPoint、Controller Action、gRPC端点注入中介者发出这条查询
 ```csharp
 var response = await mediator.SendAsync<GetUserProfileQuery, UserProfileDto>(new GetUserProfileQuery { /* 其他属性 */ });
 ```
